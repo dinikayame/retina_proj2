@@ -5,14 +5,20 @@
 #include <math.h>
 #include "biodynamo.h"
 #include "math_util.h"
-#include "matrix.h"
-//#include "substance_initializers.h"
+#include "substance_initializers.h"
 
 namespace bdm {
   /*
   part 2:
   TODO add substance to this model
   use substance as a way to control the way the cells migrate
+
+  part 3:
+  TODO test against real data for ret thickness
+  correlate diameter of each cell type to what is in the program
+  thickness can be tested from paraview using the axis thickness
+  or set the lowest bound cell and highest bound cell and take difference
+  for the thickness 
   */
 
 /* extend into cell class to define the cell types
@@ -39,117 +45,88 @@ namespace bdm {
   Part 2: substance will lead cell migration
   use various concentration to lead the cell to meet
 
-  Q: use different substances for each layer?
-
   substance behavior is stated in a biology module
 
   */
  enum Substances { kSubstance };
 
   /*
-  new biology module to aid cell migration -> use concentration levels to push
-  cells (i.e. diffusion grad)
-  Chemotaxis is to move the cells based on the substance stimuli
+    part 3: create own function to create cells
+    so all cells will start from a fixed bound and then migrate
+    based on the substance concentration
+
+    260318: revert back to this since the migration sort of works
   */
-  struct Chemotaxis : public BaseBiologyModule {
-    Chemotaxis() : BaseBiologyModule(gAllBmEvents) {}
 
-    template <typename T>
-    void Run(T* cell) {
-      static auto dg = GetDiffusionGrid(kSubstance);
-      //TODO change value of threshold later
-      dg->SetConcentrationThreshold(1e15);
+ template <typename Function, typename TResourceManager = ResourceManager<>>
+ static void MyCellCreator(double min, double max, int num_cells, Function cell_builder) {
+   //int num_cells = 100;
+  auto rm = TResourceManager::Get();
+  // Determine simulation object type which is returned by the cell_builder
+  using FunctionReturnType = decltype(cell_builder({0, 0, 0}));
 
-      auto& position = cell->GetPosition();
-      std::array<double, 3> gradient;
-      dg->GetGradient(position, &gradient);
-      //TODO change values if needed
-      gradient[0] *= 0.5;
-      gradient[1] *= 0.5;
-      gradient[2] *= 0.5;
+  auto container = rm->template Get<FunctionReturnType>();
+  container->reserve(num_cells);
+  //double min = 0;
+  //double max_x = 520;
+  //double max_y = 520;
 
-      cell->UpdatePosition(gradient);
-    }
-  };
+  // so cells will be created at random only on the x and y axis
+  // in this project, ignore z axis
+  for (int i = 0; i < num_cells; i++) {
+    double x = gTRandom.Uniform(min, max);
+    double y = gTRandom.Uniform(min, max);
+    //stop cells from moving in the z axis
+    double z = 0;
+    auto new_simulation_object = cell_builder({x, y, z});
+    container->push_back(new_simulation_object);
+  }
+  container->Commit();
+}
 
-  /*
-  this is to assign 1 cell to secret the substance artificially at 1 location
-  use this to link the cells within the different layers
-  i.e. like how the inner plexiform layer has ganglion cells + amacrine cells
-  */
-  struct kSecretion : public BaseBiologyModule {
-    kSecretion() : BaseBiologyModule() {}
+/*
+EDITS:
+210318
+simplifying model to check for memory allocation error
 
-    template <typename T>
-    void Run(T* cell){
-      static auto dg = GetDiffusionGrid(kSubstance);
-      //TODO may or may not need this
-      //needs to be declared/ used somewhere then uncomment this
-      //array<double, 3> secretion_position = {50, 50, 50};
-      //to change value
-      double amount = 4;
-      //increase conc --> cell pos changes by that amount
-      dg->IncreaseConcentrationBy(cell->GetPosition(), amount);
-    }
-  };
+220318
+simplifying model further to just 1 cell as the gradient thing is not correct
+cells only migrating along x axis and not y
 
+1643
+try adding another cell --> BUT CELL NOT MOVING
+Q: should try adding substance for each cell type?
 
-
-    /*
-    Ganglion layer cells -> focus on 3 types:
-    1. Midget cell -> input from BIPOLAR CELLS + small size
-    2. Parasol cell -> input from rod & cones; part of M pathway + large size (dentritic)
-    3. Bistratified cell -> input from BIPOLAR & AMACRINE CELLS + medium size
-    */
-    struct midgetCell : public BaseBiologyModule {
-      midgetCell() : BaseBiologyModule(gAllBmEvents){}
+changing the concentration on the constructor changes the way the cells behave
+amacrine moves but not as expected...
+*/
+    struct ganglionCell : public BaseBiologyModule {
+      ganglionCell() : BaseBiologyModule(gAllBmEvents){}
 
       template <typename T>
       void Run(T* cell){
-        //what will make the cell grow
-        if (cell->GetCellType() > 0) {
-          array<double, 3> direction {0, 1, 0};
-          //make it grow along the y axis
-          cell->UpdateMassLocation(direction);
-          //to ensure that there is no traction between cells
-          cell->SetTractorForce({0,0,0});
-          cell->SetCellType(cell->GetCellType()-1);
+        //initialisation of diffusion grid
+        if (!init_) {
+          dg_= GetDiffusionGrid(kSubstance);
+          init_ = true;
+        }
+        //get the position of cell and grad
+        auto& position = cell->GetPosition();
+        dg_->GetGradient(position, &gradient_);
+        double concentration = dg_->GetConcentration(position);
+
+        /*
+          260318: TODO add stopping criteria for cells to stop migrating
+        */
+        if(concentration < 0.000000002){
+          cell->UpdatePosition(gradient_);
+          cell->SetPosition(cell->GetMassLocation());
         }
       }
-    };
-
-    struct parasolCell : public BaseBiologyModule {
-      parasolCell() : BaseBiologyModule(gAllBmEvents){}
-
-      template <typename T>
-      void Run(T* cell){
-        //what will make the cell grow
-        if (cell->GetCellType() > 0) {
-          array<double, 3> direction {0, 1, 0};
-          //make it grow along the y axis
-          cell->UpdateMassLocation(direction);
-          //to ensure that there is no traction between cells
-          cell->SetTractorForce({0,0,0});
-          cell->SetCellType(cell->GetCellType()-1);
-        }
-      }
-    };
-
-    struct bistratifiedCell : public BaseBiologyModule {
-      bistratifiedCell() : BaseBiologyModule(gAllBmEvents){}
-
-      template <typename T>
-      void Run(T* cell){
-        //what will make the cell grow
-        if (cell->GetCellType() > 0) {
-          array<double, 3> direction {0, 1, 0};
-          //make it grow along the y axis
-          cell->UpdateMassLocation(direction);
-          //to ensure that there is no traction between cells
-          cell->SetTractorForce({0,0,0});
-          cell->SetCellType(cell->GetCellType()-1);
-        }
-      }
+      private:
+        bool init_ = false;
+        DiffusionGrid* dg_ = nullptr;
+        std::array<double, 3> gradient_;
     };
 
     /*
@@ -164,19 +141,32 @@ namespace bdm {
 
       template <typename T>
       void Run(T* cell){
-        //what will make the cell grow
-        if (cell->GetCellType() > 0) {
-          array<double, 3> direction {0, 1, 0};
-          //make it grow along the y axis
-          cell->UpdateMassLocation(direction);
-          //to ensure that there is no traction between cells
-          cell->SetTractorForce({0,0,0});
-          cell->SetCellType(cell->GetCellType()-1);
+        //initialisation of diffusion grid
+        if (!init_) {
+          dg_= GetDiffusionGrid(kSubstance);
+          init_ = true;
+        }
+        //get the position of cell and grad
+        auto& position = cell->GetPosition();
+        dg_->GetGradient(position, &gradient_);
+        double concentration = dg_->GetConcentration(position);
+          /*
+            260318: TODO add stopping criteria for cells to stop migrating
+          */
+          if(concentration < 0.00000003){
+          cell->UpdatePosition(gradient_);
+          cell->SetPosition(cell->GetMassLocation());
         }
       }
+    private:
+      bool init_ = false;
+      DiffusionGrid* dg_ = nullptr;
+      std::array<double, 3> gradient_;
     };
 
-    /*bipolar cells
+    /*
+    260318: re-add and edited
+    bipolar cells
     exists between photoreceptors and ganglion cells
     so it will either synpase with:
     1. photoreceptors -> rods/ cones (i.e. Parasol cells)
@@ -187,16 +177,25 @@ namespace bdm {
 
       template <typename T>
       void Run(T* cell){
-        //what will make the cell grow
-        if (cell->GetCellType() > 0) {
-          array<double, 3> direction {0, 1, 0};
-          //make it grow along the y axis
-          cell->UpdateMassLocation(direction);
-          //to ensure that there is no traction between cells
-          cell->SetTractorForce({0,0,0});
-          cell->SetCellType(cell->GetCellType()-1);
+        //initialisation of diffusion grid
+        if (!init_) {
+          dg_= GetDiffusionGrid(kSubstance);
+          init_ = true;
+        }
+        //get the position of cell and grad
+        auto& position = cell->GetPosition();
+        dg_->GetGradient(position, &gradient_);
+        double concentration = dg_->GetConcentration(position);
+
+        if (concentration < 0.000000045) {
+          cell->UpdatePosition(gradient_);
+          cell->SetPosition(cell->GetMassLocation());
         }
       }
+    private:
+      bool init_ = false;
+      DiffusionGrid* dg_ = nullptr;
+      std::array<double, 3> gradient_;
     };
 
     /*horizontal cells
@@ -209,16 +208,25 @@ namespace bdm {
 
       template <typename T>
       void Run(T* cell){
-        //what will make the cell grow
-        if (cell->GetCellType() > 0) {
-          array<double, 3> direction {0, 1, 0};
-          //make it grow along the y axis
-          cell->UpdateMassLocation(direction);
-          //to ensure that there is no traction between cells
-          cell->SetTractorForce({0,0,0});
-          cell->SetCellType(cell->GetCellType()-1);
+        //initialisation of diffusion grid
+        if (!init_) {
+          dg_= GetDiffusionGrid(kSubstance);
+          init_ = true;
+        }
+        //get the position of cell and grad
+        auto& position = cell->GetPosition();
+        dg_->GetGradient(position, &gradient_);
+        double concentration = dg_->GetConcentration(position);
+
+        if (concentration < 0.00000006) {
+          cell->UpdatePosition(gradient_);
+          cell->SetPosition(cell->GetMassLocation());
         }
       }
+    private:
+      bool init_ = false;
+      DiffusionGrid* dg_ = nullptr;
+      std::array<double, 3> gradient_;
     };
 
     /*cones
@@ -231,16 +239,25 @@ namespace bdm {
 
       template <typename T>
       void Run(T* cell){
-        //what will make the cell grow
-        if (cell->GetCellType() > 0) {
-          array<double, 3> direction {0, 1, 0};
-          //make it grow along the y axis
-          cell->UpdateMassLocation(direction);
-          //to ensure that there is no traction between cells
-          cell->SetTractorForce({0,0,0});
-          cell->SetCellType(cell->GetCellType()-1);
+        //initialisation of diffusion grid
+        if (!init_) {
+          dg_= GetDiffusionGrid(kSubstance);
+          init_ = true;
+        }
+        //get the position of cell and grad
+        auto& position = cell->GetPosition();
+        dg_->GetGradient(position, &gradient_);
+        double concentration = dg_->GetConcentration(position);
+
+        if (concentration < 0.000000078) {
+          cell->UpdatePosition(gradient_);
+          cell->SetPosition(cell->GetMassLocation());
         }
       }
+    private:
+      bool init_ = false;
+      DiffusionGrid* dg_ = nullptr;
+      std::array<double, 3> gradient_;
     };
 
     /*rods
@@ -253,49 +270,31 @@ namespace bdm {
 
       template <typename T>
       void Run(T* cell){
-        //what will make the cell grow
-        if (cell->GetCellType() > 0) {
-          array<double, 3> direction {0, 1, 0};
-          //make it grow along the y axis
-          cell->UpdateMassLocation(direction);
-          //to ensure that there is no traction between cells
-          cell->SetTractorForce({0,0,0});
-          cell->SetCellType(cell->GetCellType()-1);
+        //initialisation of diffusion grid
+        if (!init_) {
+          dg_= GetDiffusionGrid(kSubstance);
+          init_ = true;
+        }
+        //get the position of cell and grad
+        auto& position = cell->GetPosition();
+        dg_->GetGradient(position, &gradient_);
+        double concentration = dg_->GetConcentration(position);
+
+        if (concentration < 0.000000078) {
+          cell->UpdatePosition(gradient_);
+          cell->SetPosition(cell->GetMassLocation());
         }
       }
+    private:
+      bool init_ = false;
+      DiffusionGrid* dg_ = nullptr;
+      std::array<double, 3> gradient_;
     };
-
-//may not need this at all --> just extra function to define the substance?
-  // struct GaussianBand {
-  //   double mean_;
-  //   double sigma_;
-  //   uint8_t axis_;
-  //
-  //   GaussianBand(double mean, double sigma, uint8_t axis) {
-  //     mean_ = mean;
-  //     sigma_ = sigma;
-  //     axis_ = axis;
-  //   }
-  //
-  //   double operator()(double x, double y, double z) {
-  //     switch(axis_) {
-  //       case Axis::kXAxis: return ROOT::Math::normal_pdf(x, sigma_, mean_);
-  //       case Axis::kYAxis: return ROOT::Math::normal_pdf(y, sigma_, mean_);
-  //       case Axis::kZAxis: return ROOT::Math::normal_pdf(z, sigma_, mean_);
-  //       default: throw std::logic_error("You have chosen an non-existing axis!");
-  //     }
-  //   }
-  // };
 
 // Define compile time parameter
 template <typename Backend>
 struct CompileTimeParam : public DefaultCompileTimeParam<Backend> {
-  /*using BiologyModules = Variant<Chemotaxis, kSecretion, midgetCell,
-  parasolCell, bistratifiedCell, amacrineCell, bipolarCell,
-  horizontalCell, coneCell, rodCell>;*/
-  using BiologyModules = Variant<midgetCell,
-  parasolCell, bistratifiedCell, amacrineCell, bipolarCell,
-  horizontalCell, coneCell, rodCell, Chemotaxis>;
+  using BiologyModules = Variant<ganglionCell, amacrineCell, bipolarCell, horizontalCell, coneCell, rodCell>;
   using AtomicTypes = VariadicTypedef <MyCell>;
 };
 
@@ -306,6 +305,12 @@ inline int Simulate(int argc, const char** argv) {
   specific seed
   part 2: TODO check what is a good value range for a seed to occur
   */
+
+  Param::bound_space_ = true;
+  Param::min_bound_ = 0;
+  Param::max_bound_ = 520;
+  Param::run_mechanical_interactions_ = true;
+
     int randSeed = rand() % 1000;
     gTRandom.SetSeed(randSeed);
     cout << "modelling seed: " << randSeed <<endl;
@@ -317,203 +322,120 @@ inline int Simulate(int argc, const char** argv) {
   assume how the light rays fall onto the retina
   */
 
-  /*rods
-  part 2:
-  cells are longish -> outer seg + inner seg + nucleus
-  connect to horizontal cells + bipolar cells + Parasol cells? <check this>
-  */
-    auto construct_rod = [](const std::array<double, 3>& position){
-      MyCell cell(position);
-      cell.SetDiameter(20);
-      cell.AddBiologyModule(rodCell());
-      cell.AddBiologyModule(Chemotaxis());
-      cell.SetCellType(8);
-      return cell;
-    };
-    cout << "Rod cells created" << endl;
+  auto construct_ganglion = [](const std::array<double, 3>& position) {
+        MyCell cell(position);
+        cell.SetDiameter(20);
+        cell.AddBiologyModule(ganglionCell());
+        cell.SetCellType(6);
+        return cell;
+      };
+      //CellCreator(Param::min_bound_, Param::max_bound_, 50, construct_bistratified);
+    cout << "Ganglion cells created" << endl;
+    MyCellCreator(Param::min_bound_, Param::max_bound_, 200, construct_ganglion);
 
-    //this creates the cell at random: min bound, max bound, no of cell, cell type
-     ModelInitializer::CreateCellsRandom(350, gTRandom.Uniform(350,Param::max_bound_),
-                                       20, construct_rod);
-
-  /*cones
-  part 2:
-  cells are long but rounder and wider than rods
-  connect to horizontal cells + bipolar cells + Parasol cells? <check this>
-  */
-
-    auto construct_cone = [](const std::array<double, 3>& position){
-      MyCell cell(position);
-      cell.SetDiameter(20);
-      cell.AddBiologyModule(coneCell());
-      cell.AddBiologyModule(Chemotaxis());
-      cell.SetCellType(7);
-      return cell;
-    };
-    cout << "Cone cells created" << endl;
-
-    //this creates the cell at random: min bound, max bound, no of cell, cell type
-     ModelInitializer::CreateCellsRandom(350, gTRandom.Uniform(350,Param::max_bound_),
-                                       20, construct_cone);
-/*horizontal cells
-part 2:
-cells work laterally
-connected to outputs from rods and cones
-*/
-
-    auto construct_horizontal = [](const std::array<double, 3>& position){
-      MyCell cell(position);
-      cell.SetDiameter(30);
-      cell.AddBiologyModule(horizontalCell());
-      cell.AddBiologyModule(Chemotaxis());
-      cell.SetCellType(6);
-      return cell;
-    };
-    cout << "Horizontal cells created" << endl;
-
-    //this creates the cell at random: min bound, max bound, no of cell, cell type
-     ModelInitializer::CreateCellsRandom(300, gTRandom.Uniform(300,450),
-                                       20, construct_horizontal);
-
-  /*bipolar cells
-  part 2: exists between photoreceptors and ganglion cells
-  so it will either synpase with:
-  1. photoreceptors -> rods/ cones (i.e. Parasol cells)
-  2. horizontal cells
-  */
-    auto construct_bipolar = [](const std::array<double, 3>& position){
-      MyCell cell(position);
-      cell.SetDiameter(40);
-      cell.AddBiologyModule(bipolarCell());
-      cell.AddBiologyModule(Chemotaxis());
-      cell.SetCellType(5);
-      return cell;
-    };
-    cout << "Bipolar cells created" << endl;
-
-    //this creates the cell at random: min bound, max bound, no of cell, cell type
-     ModelInitializer::CreateCellsRandom(200, gTRandom.Uniform(200,400),
-                                       20, construct_bipolar);
-
-  /*amacrine cells
-  part 2: This is in the inner limiting layer where it links to the
-  bipolar and ganglion cells
-  so it takes the input from the ganglion cell o the bipolar cell
-  So for ganglion cells --> link to the MIDGET & BISTRATIFIED CELLS
-  Cells work laterally
-  */
+    /*amacrine cells
+    part 2: This is in the inner limiting layer where it links to the
+    bipolar and ganglion cells
+    so it takes the input from the ganglion cell o the bipolar cell
+    So for ganglion cells --> link to the MIDGET & BISTRATIFIED CELLS
+    Cells work laterally
+    */
     auto construct_amacrine = [](const std::array<double, 3>& position){
-      MyCell cell(position);
-      cell.SetDiameter(45);
-      cell.AddBiologyModule(amacrineCell());
-      cell.AddBiologyModule(Chemotaxis());
-      cell.SetCellType(4);
-      return cell;
-    };
+        MyCell cell(position);
+        cell.SetDiameter(15);
+        cell.AddBiologyModule(amacrineCell());
+        cell.SetCellType(5);
+        return cell;
+      };
     cout << "Amacrine cells created" << endl;
+    MyCellCreator(Param::min_bound_, Param::max_bound_, 200, construct_amacrine);
 
-    //this creates the cell at random: min bound, max bound, no of cell, cell type
-     ModelInitializer::CreateCellsRandom(100, gTRandom.Uniform(100,400),
-                                       20, construct_amacrine);
+    /*bipolar cells
+    part 2: exists between photoreceptors and ganglion cells
+    so it will either synpase with:
+    1. photoreceptors -> rods/ cones (i.e. Parasol cells)
+    2. horizontal cells
+    */
+      auto construct_bipolar = [](const std::array<double, 3>& position){
+        MyCell cell(position);
+        cell.SetDiameter(12);
+        cell.AddBiologyModule(bipolarCell());
+        cell.SetCellType(4);
+        return cell;
+      };
+      cout << "Bipolar cells created" << endl;
+      MyCellCreator(Param::min_bound_, Param::max_bound_, 200, construct_bipolar);
 
-/* ganglion cell
-part 2: there are various types of ganglion cells to take into account that
-connects to different cells for inputs
-for now, take into consideration the following:
-1. Midget cell -> input from BIPOLAR CELLS + small size
-2. Parasol cell -> input from rod & cones; part of M pathway + large size (dentritic)
-3. Bistratified cell -> input from BIPOLAR & AMACRINE CELLS + medium size
-4. Photosensitive ganglion cells <ignore>
-5. other cells for saccades <ignore>
-create a condition to link to the layer below it -> "if statements"?
-*/
+      /*horizontal cells
+      part 2:
+      cells work laterally
+      connected to outputs from rods and cones
+      */
+      auto construct_horizontal = [](const std::array<double, 3>& position){
+          MyCell cell(position);
+          cell.SetDiameter(10);
+          cell.AddBiologyModule(horizontalCell());
+          cell.SetCellType(3);
+          return cell;
+      };
+      cout << "Horizontal cells created" << endl;
+      MyCellCreator(Param::min_bound_, Param::max_bound_, 200, construct_horizontal);
 
-    auto construct_midget = [](const std::array<double, 3>& position){
-      MyCell cell(position);
-      cell.SetDiameter(50);
-      cell.AddBiologyModule(midgetCell());
-      cell.AddBiologyModule(Chemotaxis());
-      cell.SetCellType(3);
-      return cell;
-    };
-    cout << "Midget cells created" << endl;
+    /*cones
+    part 2:
+    cells are long but rounder and wider than rods
+    connect to horizontal cells + bipolar cells + Parasol cells? <check this>
+    */
+      auto construct_cone = [](const std::array<double, 3>& position){
+        MyCell cell(position);
+        cell.SetDiameter(6);
+        cell.AddBiologyModule(coneCell());
+        cell.SetCellType(2);
+        return cell;
+      };
+      cout << "Cone cells created" << endl;
+      MyCellCreator(Param::min_bound_, Param::max_bound_, 100, construct_cone);
 
-    //this creates the cell at random: min bound, max bound, no of cell, cell type
-     ModelInitializer::CreateCellsRandom(Param::min_bound_, gTRandom.Uniform(0,200),
-                                       20, construct_midget);
+    /*rods
+      part 2:
+      cells are longish -> outer seg + inner seg + nucleus
+      connect to horizontal cells + bipolar cells + Parasol cells? <check this>
+    */
+      auto construct_rod = [](const std::array<double, 3>& position){
+        MyCell cell(position);
+        cell.SetDiameter(5);
+        cell.AddBiologyModule(rodCell());
+        cell.SetCellType(1);
+        return cell;
+      };
+      cout << "Rod cells created" << endl;
+      MyCellCreator(Param::min_bound_, Param::max_bound_, 100, construct_rod);
+
     //defining substances in simulation
     //diffusion coefficient of 0.5, a decay constant 0f 0.1 and a resolution of 1
-  //  ModelInitializer::DefineSubstance(kSubstance, "Substance", 0.5, 0.1, 1);
-
-    auto construct_parasol = [](const std::array<double, 3>& position){
-      MyCell cell(position);
-      cell.SetDiameter(100);
-      cell.AddBiologyModule(parasolCell());
-      cell.AddBiologyModule(Chemotaxis());
-      cell.SetCellType(2);
-      return cell;
-    };
-    cout << "Parasol cells created" << endl;
-
-    //this creates the cell at random: min bound, max bound, no of cell, cell type
-     ModelInitializer::CreateCellsRandom(Param::min_bound_, Param::max_bound_,
-                                       20, construct_parasol);
-
-    // for (int i=0; i<20; i++) {
-    //   array<double, 3> position = {gTRandom.Uniform(0,500), gTRandom.Uniform(0,500), 0};
-    //   MyCell cell(position);
-    //   cell.SetDiameter(75);
-    //   cell.AddBiologyModule(bistratifiedCell());
-    //   cell.AddBiologyModule(Chemotaxis());
-    //   cell.SetCellType(90);
-    //   ResourceManager<>::Get()->push_back(cell);
-    //   if (position[0] == 0 && position[1] == 0 && position[2] == 0) {
-    //     cell.AddBiologyModule(kSecretion());
-    //   }
-    // }
-
-    auto construct_bistratified = [](const std::array<double, 3>& position) {
-      MyCell cell(position);
-      cell.SetDiameter(75);
-      cell.AddBiologyModule(bistratifiedCell());
-      cell.AddBiologyModule(Chemotaxis());
-      cell.SetCellType(1);
-      return cell;
-    };
-    //CellCreator(Param::min_bound_, Param::max_bound_, 50, construct_bistratified);
-    cout << "Bistratified cells created" << endl;
-
-   //this creates the cell at random: min bound, max bound, no of cell, cell type
-   //TODO change min and max bound so that cells are created within a
-   //certain layer --> should i do gTRandom.Uniform(0,200) ???
-    ModelInitializer::CreateCellsRandom(Param::min_bound_, gTRandom.Uniform(0,200),
-                                      20, construct_bistratified);
-    //defining substances in simulation
-    //diffusion coefficient of 0.5, a decay constant 0f 0.1 and a resolution of 1
-    ModelInitializer::DefineSubstance(kSubstance, "Substance", 0.5, 0.1, 1);
+    ModelInitializer::DefineSubstance(kSubstance, "kSubstance", 0.5, 0.1, 4);
     //initialise substance: enum of substance, name, function type used
     //mean value of 120 along the x-axis, and a variance of 5
     //along which axis (0 = x, 1 = y, 2 = z). See the documentation of `GaussianBand` for
     //information about its arguments
-    ModelInitializer::InitializeSubstance(kSubstance, "Substance",
-      GaussianBand(120, 5, Axis::kXAxis));
+    // ModelInitializer::InitializeSubstance(kSubstance, "Substance",
+    //                                         GaussianBand(120, 5, Axis::kXAxis));
+    ModelInitializer::InitializeSubstance(kSubstance, "kSubstance",
+                                            GaussianBand(200, 100, Axis::kZAxis));
 
 
   //link to paraview to show visualization
     Param::live_visualization_ = true;
-    Param::min_bound_ = 0;
-    Param::max_bound_ = 520;
-    Param::run_mechanical_interactions_ = true;
+    Param::export_visualization_ = true;
+    Param::visualization_export_interval_ = 2;
+    //Param::visualize_sim_objects_["MyCell"] = std::set<std::string>{"diameter_"};
+    Param::visualize_sim_objects_["MyCell"] = std::set<std::string>{"cellType"};
 
   // Run simulation for one timestep
   Scheduler<> scheduler;
   int maxStep = 1000;
   for (int i = 0; i < maxStep; i++){
     scheduler.Simulate(1);
-    //for every 10 cells
-    // if(i %10==0){
-    //
-    // }
   }
 
 
